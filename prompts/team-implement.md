@@ -1,20 +1,34 @@
 ---
-description: Full team workflow — scout → plan → develop → QA (code quality + architecture + UI) → developer fixes
+description: Team workflow — scout → plan → develop → QA → fix
 ---
-Use the subagent tool with the chain parameter to execute this team workflow:
+Use the subagent tool to execute this workflow for: $@
 
-1. First, use the "scout" agent to find all code relevant to: $@
-2. Then, use the "planner" agent to create an implementation plan for "$@" using the scout's context (use {previous} placeholder)
-3. Then, use the "developer" agent to implement the plan from the previous step (use {previous} placeholder)
-4. Then, run three QA agents in PARALLEL using the tasks parameter:
-   - "code-quality" agent: Review the implementation for code accretion issues. Context from developer: {previous}
-   - "arch-review" agent: Review the implementation for adherence to the architecture philosophy in `.pi/philosophy.md`. Context from developer: {previous}
-   - "ui-qa" agent: Test the UI changes if applicable. Context from developer: {previous}
-5. Finally, use the "developer" agent to address all feedback from the QA agents (use {previous} placeholder)
+**Step 1: Chain — scout → plan → develop**
+Use chain mode with these 3 agents:
+1. "scout" agent: Find code relevant to: $@
+2. "planner" agent: Create an implementation plan for "$@" using scout context. {previous}
+3. "developer" agent: Implement the plan. {previous}
 
-For steps 1-3 and 5, use chain mode. For step 4, use parallel mode.
+Save the developer's output. Extract two things from it:
+- **changes**: the file list and one-line change descriptions
+- **plan**: the plan from step 2 (already embedded in the chain output)
 
-Since the subagent tool only supports one mode per call, execute this as:
-- First call: chain with steps 1, 2, 3
-- Second call: parallel with the three QA tasks, passing the chain output as context in each task
-- Third call: single developer agent to address QA feedback
+**Step 2: Sequential QA (3 calls, minimal context each)**
+
+Call each agent in single mode, one at a time. Do NOT pass the full chain output — pass only what each agent needs.
+
+a) "code-review" agent (combined quality + architecture):
+   Task: "Review these changes: {changes}"
+
+b) "plan-checker" agent:
+   Task: "Plan: {plan}\n\nChanges: {changes}\n\nVerify the implementation matches the plan."
+
+c) "ui-qa" agent:
+   Task: "Changed files: {changes}\n\nTest UI changes if any UI files were modified."
+
+**Step 3: Fix if needed**
+Collect all issues from the 3 QA agents. Only if there are RETHINK, EXTRACT, or ARCH severity issues, OR the plan-checker says FAIL, OR ui-qa found Critical issues — use single mode with "developer" agent to address them. Pass only the issues list.
+
+Otherwise report completion with the QA results.
+
+⚠️ The key cost control: each QA agent gets ONLY the summary it needs, not the full developer output. Summarize aggressively.

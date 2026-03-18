@@ -1,14 +1,12 @@
 ---
-description: Iterative dev cycle — developer implements, code review, developer fixes (repeat until clean)
+description: Iterative dev cycle — develop → review → fix (one iteration)
 ---
-Use the subagent tool to run an iterative development cycle for: $@
+Use the subagent tool to run a dev cycle for: $@
 
-Step 1: Use the subagent tool in single mode with "developer" agent to implement: $@
+**Step 1:** Single mode — "developer" agent to implement: $@
 
-Step 2: Use the subagent tool in single mode with "code-quality" agent to review the implementation. Pass the developer's output as context in the task.
+**Step 2:** Single mode — "code-quality" agent to review. Pass only the **file list and change summary** from the developer (not the full output).
 
-Step 3: If the code-quality agent found Critical or Warning issues, use the subagent tool in single mode with "developer" agent to address the feedback. Pass the review output as context.
+**Step 3:** Only if RETHINK or EXTRACT issues found, use "developer" agent to fix them. Pass only the issues list. Otherwise report clean.
 
-Step 4: If fixes were needed, run one more "code-quality" review to verify.
-
-Report the final status.
+One iteration only — no loops.

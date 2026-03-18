@@ -1,12 +1,19 @@
 ---
-description: Team review — parallel QA (code quality + architecture + plan check + UI) on existing code, then developer fixes
+description: Team review — full QA on existing code, then developer fixes
 ---
-Use the subagent tool to review and fix existing code. The task is: $@
+Use the subagent tool to review and fix existing code for: $@
 
-Step 1: Run four QA agents in PARALLEL using the subagent tool's tasks parameter:
-- "code-quality" agent with task: "Review the recent changes. $@"
-- "arch-review" agent with task: "Review the implementation for adherence to the architecture philosophy in `.pi/philosophy.md`. $@"
-- "plan-checker" agent with task: "Verify the implementation matches requirements. $@"
-- "ui-qa" agent with task: "Test the UI for the recent changes. $@"
+**Step 1: Sequential QA** (single mode, one at a time)
 
-Step 2: After all QA agents finish, use the subagent tool in single mode with the "developer" agent to address all the feedback from the four QA agents. Include the full QA output in the task.
+a) "code-review" agent: "Review the recent changes. $@"
+
+b) "plan-checker" agent — only if requirements/plan context is available:
+   "Verify implementation matches the plan. $@"
+
+c) "ui-qa" agent — only if the task involves UI:
+   "Test UI for recent changes. $@"
+
+**Step 2: Fix if needed**
+Collect all issues. Only if RETHINK/EXTRACT/ARCH issues or plan-checker FAIL or ui-qa Critical issues exist, use "developer" agent to fix. Pass only the issues list.
+
+Otherwise report the QA results as-is.

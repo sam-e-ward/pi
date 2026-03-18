@@ -47,8 +47,16 @@ echo "=== Setting up symlinks ==="
 
 # Symlink config files into ~/.pi
 symlink_file "$REPO_DIR/AGENTS.md" "$PI_DIR/AGENTS.md"
-symlink_file "$REPO_DIR/agents/arch-review.md" "$PI_DIR/agents/arch-review.md"
 symlink_file "$REPO_DIR/philosophy.md" "$HOME/.pi/philosophy.md"
+
+# Symlink all agents
+echo ""
+echo "=== Linking agents ==="
+for agent in "$REPO_DIR"/agents/*.md; do
+  [ -f "$agent" ] || continue
+  name=$(basename "$agent")
+  symlink_file "$agent" "$PI_DIR/agents/$name"
+done
 
 echo ""
 echo "=== Installing web-browser skill dependencies ==="

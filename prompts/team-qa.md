@@ -1,11 +1,14 @@
 ---
-description: QA-only — run all QA agents in parallel on the current state of the code
+description: QA-only — review current state of the code (no changes made)
 ---
-Use the subagent tool with the tasks parameter (parallel mode) to run QA on the codebase:
+Use the subagent tool to run QA on the codebase. Run each sequentially in single mode.
 
-- "code-quality" agent with task: "Review the codebase focusing on: $@"
-- "arch-review" agent with task: "Review the implementation for adherence to the architecture philosophy in `.pi/philosophy.md`. Focus on: $@"
-- "plan-checker" agent with task: "Check if the implementation is complete and correct for: $@"
-- "ui-qa" agent with task: "Test the UI for: $@"
+1. "code-review" agent: "Review the codebase focusing on: $@"
+
+2. "plan-checker" agent — only if a plan or requirements doc is referenced in the task:
+   "Verify implementation matches requirements for: $@"
+
+3. "ui-qa" agent — only if the task involves UI:
+   "Test UI for: $@"
 
 Report all findings. Do not make any changes.

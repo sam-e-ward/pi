@@ -1,0 +1,39 @@
+{
+  "_comment": "Per-agent model config. Use /agent-mode free|paid to toggle.",
+  "default": {
+    "paid": "claude-sonnet-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "scout": {
+    "paid": "claude-haiku-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "planner": {
+    "paid": "claude-sonnet-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "developer": {
+    "paid": "claude-sonnet-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "code-review": {
+    "paid": "claude-haiku-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "code-quality": {
+    "paid": "claude-haiku-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "arch-review": {
+    "paid": "claude-haiku-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "plan-checker": {
+    "paid": "claude-haiku-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  },
+  "ui-qa": {
+    "paid": "claude-sonnet-4-5",
+    "free": "openrouter/qwen/qwen3-coder:free"
+  }
+}
