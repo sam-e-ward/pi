@@ -23,7 +23,6 @@ import { type ExtensionAPI, getMarkdownTheme } from "@mariozechner/pi-coding-age
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
-import { resolveModel } from "./models.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -245,11 +244,8 @@ async function runSingleAgent(
 		};
 	}
 
-	// Resolve single model for this agent (no fallback chain)
-	const model = resolveModel(agentName, agent.model);
-
 	return runSingleAgentWithModel(
-		defaultCwd, agent, agentName, task, cwd, step, signal, onUpdate, makeDetails, model,
+		defaultCwd, agent, agentName, task, cwd, step, signal, onUpdate, makeDetails, agent.model,
 	);
 }
 
