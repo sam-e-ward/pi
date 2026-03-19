@@ -4,10 +4,19 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 
-# Check pi is available
+# Ensure pi is available on PATH
 if ! command -v pi &>/dev/null; then
-  echo "Error: pi is not installed or not on PATH" >&2
-  exit 1
+  PI_BIN="/opt/homebrew/bin/pi"
+  LINK_DIR="/usr/local/bin"
+  if [ -x "$PI_BIN" ]; then
+    echo "pi not found on PATH — creating symlink at $LINK_DIR/pi → $PI_BIN"
+    sudo mkdir -p "$LINK_DIR"
+    sudo ln -sf "$PI_BIN" "$LINK_DIR/pi"
+    echo "  ✓ Symlinked $LINK_DIR/pi → $PI_BIN"
+  else
+    echo "Error: pi is not installed at $PI_BIN and not on PATH" >&2
+    exit 1
+  fi
 fi
 
 # Helper: create symlink, backing up existing real file
