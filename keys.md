@@ -4,26 +4,6 @@ This document lists every authentication credential required by the skills in th
 
 ## Skills that require authentication
 
-### GitHub (`skills/github`)
-
-**What:** The `gh` CLI must be authenticated with GitHub.
-
-**Setup:**
-```bash
-gh auth login
-```
-
-Follow the interactive prompts to authenticate via browser or token. This creates a config at `~/.config/gh/hosts.yml`.
-
-**Scopes needed:** Depends on usage — at minimum `repo` for private repos, `read:org` for org queries. The interactive login flow will request appropriate scopes.
-
-**Verify:**
-```bash
-gh auth status
-```
-
----
-
 ### Sentry (`skills/sentry`)
 
 **What:** A Sentry auth token stored in `~/.sentryclirc`.
@@ -118,14 +98,10 @@ Without `--summary`, this skill just runs `uvx markitdown` locally and needs no 
 ## Quick checklist
 
 ```bash
-# 1. GitHub — authenticate the gh CLI
-gh auth login
-gh auth status
-
-# 2. Sentry — ensure ~/.sentryclirc exists with a valid token
+# 1. Sentry — ensure ~/.sentryclirc exists with a valid token
 cat ~/.sentryclirc
 
-# 3. Pi agent auth — ensure ~/.pi/agent/auth.json has provider credentials
+# 2. Pi agent auth — ensure ~/.pi/agent/auth.json has provider credentials
 #    (managed by pi itself, or manually for API key setups)
 ls ~/.pi/agent/auth.json
 ```
