@@ -81,6 +81,22 @@ echo "=== Installing pi package ==="
 pi install "$REPO_DIR"
 echo "  ✓ Package installed"
 
+# Ensure pi runs `reset` after exit to restore terminal state
+echo ""
+echo "=== Configuring shell ==="
+ZSHRC_LOCAL="$HOME/.zshrc.local"
+PI_SHELL_MARKER="# pi: reset terminal after exit"
+if [ -f "$ZSHRC_LOCAL" ] && grep -qF "$PI_SHELL_MARKER" "$ZSHRC_LOCAL"; then
+  echo "  ✓ pi shell function already configured in $ZSHRC_LOCAL"
+else
+  {
+    echo ""
+    echo "$PI_SHELL_MARKER"
+    echo 'pi() { command pi "$@"; reset }'
+  } >> "$ZSHRC_LOCAL"
+  echo "  ✓ Added pi shell function to $ZSHRC_LOCAL"
+fi
+
 echo ""
 echo "Done! Symlinks point to files in $REPO_DIR"
 echo ""
