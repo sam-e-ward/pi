@@ -294,6 +294,49 @@ When the loop completes, report:
 - **Remaining issues** — any warnings/info items not addressed (if max loops hit)
 - **How to verify** — build/test commands to run
 
+### Token efficiency
+
+Multi-agent loops burn through tokens fast. Every design decision in `team-implement` should be made with cost in mind. This is the single biggest risk with compound commands — a sloppy implementation will drain API budgets in minutes.
+
+#### Compress between handoffs
+
+The output of each agent is the input to the next — and every token of input is a token you pay for. Agents must produce **minimal structured output**, not prose. This is why scout caps at 100 lines and planner at 50. If an agent's output format isn't enforced tightly, the downstream cost compounds at every stage.
+
+When passing context between agents, strip anything the next agent doesn't need. The developer doesn't need the scout's full output on loop 2 — it needs the review feedback and the plan. Don't re-send what hasn't changed.
+
+#### Use tool-native features to limit context
+
+Every tool has mechanisms to control what the model sees. Use them aggressively:
+
+- **pi**: Subagents get isolated context by default — they don't inherit the parent's conversation history. Use this. Don't pass the full conversation; pass only the structured handoff.
+- **opencode / others**: Check for equivalent isolation features (separate sessions, context windows, system prompt injection). If the tool doesn't isolate subagent context, simulate it by starting fresh invocations rather than appending to a single conversation.
+
+#### Scope file reads narrowly
+
+Review agents are the biggest token risk — they need to read code, but they don't need to read _all_ the code. Always scope reviews to `git diff` output (changed files only), not the whole codebase. If the tool supports passing line ranges or file lists to agents, use that rather than letting the agent `read` entire files and decide what's relevant.
+
+#### Keep agent prompts short
+
+Agent definition files are injected as system or user context on every invocation. A 200-line agent prompt that runs 8 times across a loop costs 1,600 lines of input tokens for the prompts alone. Keep them tight — the existing agents are deliberately terse for this reason.
+
+#### Fail fast, don't gold-plate
+
+The loop exists to catch real problems, not to iterate to perfection:
+
+- **Only loop on critical/warning issues.** Info-level findings are reported at the end, not fed back for another dev cycle.
+- **Merge review + arch-review feedback into a single concise list** before handing back to the developer. Don't send two full review outputs — deduplicate and compress.
+- **If loop 2 produces the same issues as loop 1**, exit early. The developer isn't going to fix them on loop 3 either. Report them and let the user intervene.
+
+#### Prefer smaller models where possible
+
+Not every agent needs the most capable (and most expensive) model. If the tool supports per-agent model selection:
+
+- **Scout, plan-checker**: These are read-only with structured output. A smaller, cheaper model is often sufficient.
+- **Developer, planner**: These benefit from the strongest model available.
+- **Code-review, arch-review**: Mid-tier — they need reasoning but don't generate code.
+
+Check what the tool supports. Pi allows model overrides; other tools may have equivalent config.
+
 ---
 
 ## Tool-Specific Extras
