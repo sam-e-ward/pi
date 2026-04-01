@@ -7,51 +7,30 @@ description: "Query VictoriaMetrics to investigate Kubernetes cluster health, de
 
 Query a VictoriaMetrics instance (via its Prometheus-compatible API) to investigate Kubernetes infrastructure questions.
 
-## ⛔ Safety Rules — READ FIRST
+## Safety
 
-1. **Only run `curl` commands against `http://localhost:8481`** (or the port in `$VM_PORT`). Use the provided scripts.
-2. **Never run `kubectl`, `docker`, `helm`, or any other CLI tool.** Not even read-only ones. The only executables you may invoke are the scripts in this skill's `scripts/` directory.
-3. **Never attempt to start, fix, or configure the port-forward.** If connectivity fails, tell the user and stop.
-4. **This is a read-only investigation tool.** Do not suggest or execute any remediation commands.
+This skill provides two custom tools — `vm_query` and `vm_labels` — that can **only** perform HTTP GETs against `localhost:8481`. They cannot run kubectl, docker, or any other command. Use these tools exclusively for all VictoriaMetrics queries. **Do not use the `bash` tool for querying metrics.**
 
-## Prerequisites
+If the tools report that VictoriaMetrics is unreachable, tell the user to start a port-forward and stop. Do not attempt to fix connectivity.
 
-The user must have a VictoriaMetrics vmselect port-forward running before invoking this skill:
+## Tools
 
-```bash
-kubectl port-forward -n <monitoring-namespace> svc/<vmselect-service> 8481:8481 &
+### `vm_query` — Run PromQL queries
+
+```
+vm_query(query: "up{job=\"node-exporter\"}")
+vm_query(query: "rate(container_cpu_usage_seconds_total[5m])", range: true, start: "-1h", step: "60s")
+vm_query(query: "up{job=\"node-exporter\"}", range: true, start: "2025-01-15T14:00:00Z", end: "2025-01-15T14:30:00Z", step: "30s")
 ```
 
-## Scripts
+### `vm_labels` — Discover metrics and labels
 
-All scripts are in the `scripts/` subdirectory of this skill. Run them from that directory.
-
-### `query.sh` — Run PromQL queries
-
-```bash
-# Instant query
-./scripts/query.sh 'up{job="node-exporter"}'
-
-# Range query (last hour, 60s steps)
-./scripts/query.sh 'rate(container_cpu_usage_seconds_total[5m])' --range --start=-1h --step=60s
-
-# Check connectivity only
-./scripts/query.sh --check
 ```
-
-### `labels.sh` — Discover metrics and labels
-
-```bash
-# List all label names
-./scripts/labels.sh names
-
-# List values for a specific label
-./scripts/labels.sh values cluster
-./scripts/labels.sh values namespace
-./scripts/labels.sh values node
-
-# Inspect series for a metric
-./scripts/labels.sh series 'node_memory_MemTotal_bytes'
+vm_labels(action: "names")
+vm_labels(action: "values", label: "cluster")
+vm_labels(action: "values", label: "namespace")
+vm_labels(action: "values", label: "node")
+vm_labels(action: "series", match: "node_memory_MemTotal_bytes", limit: 5)
 ```
 
 ## Workflow
@@ -60,31 +39,30 @@ Follow this sequence every time the skill is invoked:
 
 ### Step 1 — Check connectivity
 
-```bash
-./scripts/query.sh --check
+```
+vm_query(query: "up", range: false)
 ```
 
-If this fails, print the error (which includes setup instructions) and **stop**. Do not proceed.
+If this fails, the tool will report the error with setup instructions. **Stop and relay those to the user.**
 
 ### Step 2 — Load or create environment knowledge
 
 Knowledge files are stored at `~/.pi/vm-knowledge/<cluster-name>.md`.
 
 1. **Identify the environment**: query the cluster label:
-   ```bash
-   ./scripts/labels.sh values cluster
+   ```
+   vm_labels(action: "values", label: "cluster")
    ```
    This returns the cluster name(s). If there's exactly one, use it. If multiple, ask the user which one.
 
 2. **Load knowledge**: read `~/.pi/vm-knowledge/<cluster-name>.md` if it exists. This contains previously discovered information about the environment — node types, namespaces, useful metrics, label conventions, etc.
 
 3. **First time? Run discovery** (only if no knowledge file exists):
-   ```bash
-   ./scripts/labels.sh values namespace
-   ./scripts/labels.sh values node
-   ./scripts/labels.sh values job
-   ./scripts/query.sh 'count by (node, node_kubernetes_io_instance_type) (node_uname_info)'
-   ./scripts/query.sh 'kube_namespace_status_phase{phase="Active"}'
+   ```
+   vm_labels(action: "values", label: "namespace")
+   vm_labels(action: "values", label: "node")
+   vm_labels(action: "values", label: "job")
+   vm_query(query: "count by (node, node_kubernetes_io_instance_type) (node_uname_info)")
    ```
    Then create the knowledge file with what was found. Use the template below.
 
@@ -228,27 +206,19 @@ kube_horizontalpodautoscaler_spec_max_replicas
 
 When the user says something happened "around 14:15", use range queries centred on that time:
 
-```bash
-# Check node status around a specific time (30min window, 30s steps)
-./scripts/query.sh 'up{job="node-exporter"}' --range --start=2025-01-15T14:00:00Z --end=2025-01-15T14:30:00Z --step=30s
-
-# What pods restarted in that window?
-./scripts/query.sh 'increase(kube_pod_container_status_restarts_total[5m])' --range --start=2025-01-15T14:00:00Z --end=2025-01-15T14:30:00Z --step=60s
+```
+vm_query(query: "up{job=\"node-exporter\"}", range: true, start: "2025-01-15T14:00:00Z", end: "2025-01-15T14:30:00Z", step: "30s")
+vm_query(query: "increase(kube_pod_container_status_restarts_total[5m])", range: true, start: "2025-01-15T14:00:00Z", end: "2025-01-15T14:30:00Z", step: "60s")
 ```
 
 ### Discovery Queries
 
 When you don't know what's available:
 
-```bash
-# What metrics exist matching a pattern?
-./scripts/labels.sh series '{__name__=~"node_.*"}'
-
-# What jobs are reporting?
-./scripts/labels.sh values job
-
-# What containers exist in a namespace?
-./scripts/query.sh 'count by (container) (container_cpu_usage_seconds_total{namespace="<ns>"})'
+```
+vm_labels(action: "series", match: "{__name__=~\"node_.*\"}", limit: 10)
+vm_labels(action: "values", label: "job")
+vm_query(query: "count by (container) (container_cpu_usage_seconds_total{namespace=\"<ns>\"})")
 ```
 
 ## Tips
@@ -258,4 +228,4 @@ When you don't know what's available:
 - **Rate matters for counters.** Always wrap `_total` metrics in `rate()` or `increase()`.
 - **`container!=""`** filters out pod-level aggregates in container metrics.
 - **The `offset` modifier** lets you look at past values: `up offset 10m` gives you the value from 10 minutes ago.
-- **Use `--range` for trends**, instant queries for current state.
+- **Use range mode for trends**, instant queries for current state.
