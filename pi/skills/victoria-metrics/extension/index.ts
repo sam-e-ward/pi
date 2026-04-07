@@ -10,7 +10,6 @@ const KNOWLEDGE_DIR = `${process.env.HOME}/.pi/vm-knowledge`;
 
 function vmGet(path: string, timeout_ms = 30_000): string {
 	const url = `${VM_BASE}${path}`;
-	// Only ever HTTP GET against localhost — nothing else is possible here
 	return execSync(`curl -sf --max-time ${Math.ceil(timeout_ms / 1000)} '${url}'`, {
 		encoding: "utf-8",
 		timeout: timeout_ms + 2_000,
@@ -35,15 +34,191 @@ function encodeQuery(query: string): string {
 	return encodeURIComponent(query);
 }
 
-function formatJson(raw: string): string {
-	try {
-		return JSON.stringify(JSON.parse(raw), null, 2);
-	} catch {
-		return raw;
+// ── Compact formatting helpers ─────────────────────────────────────────
+
+/** Find labels that have the same value across ALL series and separate them out */
+function partitionLabels(results: any[]): { common: Record<string, string>; unique: Record<string, string>[] } {
+	if (results.length === 0) return { common: {}, unique: [] };
+	if (results.length === 1) {
+		return { common: {}, unique: [results[0].metric ?? {}] };
 	}
+
+	const allKeys = new Set<string>();
+	for (const r of results) {
+		for (const k of Object.keys(r.metric ?? {})) allKeys.add(k);
+	}
+
+	const common: Record<string, string> = {};
+	const varyingKeys: string[] = [];
+
+	for (const key of allKeys) {
+		const values = new Set(results.map((r) => r.metric?.[key]));
+		if (values.size === 1 && !values.has(undefined)) {
+			common[key] = results[0].metric[key];
+		} else {
+			varyingKeys.push(key);
+		}
+	}
+
+	const unique = results.map((r) => {
+		const u: Record<string, string> = {};
+		for (const k of varyingKeys) {
+			if (r.metric?.[k] !== undefined) u[k] = r.metric[k];
+		}
+		return u;
+	});
+
+	return { common, unique };
 }
 
-function truncateResult(text: string, max_lines = 200): { text: string; truncated: boolean } {
+function formatTimestamp(ts: number): string {
+	return new Date(ts * 1000).toISOString().replace("T", " ").replace(/\.000Z$/, "Z");
+}
+
+function formatValue(v: string): string {
+	const n = parseFloat(v);
+	if (isNaN(n)) return v;
+	if (Number.isInteger(n) && Math.abs(n) < 1e15) return n.toString();
+	if (Math.abs(n) >= 1000) return n.toFixed(1);
+	if (Math.abs(n) >= 1) return n.toFixed(3);
+	if (Math.abs(n) >= 0.001) return n.toFixed(6);
+	return n.toExponential(3);
+}
+
+function labelString(labels: Record<string, string>): string {
+	const entries = Object.entries(labels).filter(([k]) => k !== "__name__");
+	if (entries.length === 0) return "{}";
+	return "{" + entries.map(([k, v]) => `${k}="${v}"`).join(", ") + "}";
+}
+
+function computeStats(values: [number, string][]): { min: number; max: number; avg: number; first: number; last: number; count: number; firstTs: number; lastTs: number } {
+	let min = Infinity, max = -Infinity, sum = 0;
+	const first = parseFloat(values[0][1]);
+	const last = parseFloat(values[values.length - 1][1]);
+	for (const [, v] of values) {
+		const n = parseFloat(v);
+		if (n < min) min = n;
+		if (n > max) max = n;
+		sum += n;
+	}
+	return { min, max, avg: sum / values.length, first, last, count: values.length, firstTs: values[0][0], lastTs: values[values.length - 1][0] };
+}
+
+/** Format an instant query result compactly */
+function formatInstantCompact(data: any): string {
+	const results = data.result ?? [];
+	if (results.length === 0) return "No results.";
+
+	const { common, unique } = partitionLabels(results);
+	const lines: string[] = [];
+
+	if (Object.keys(common).length > 0) {
+		lines.push(`Common labels: ${labelString(common)}`);
+		lines.push("");
+	}
+
+	lines.push(`${results.length} result(s):`);
+	lines.push("");
+
+	for (let i = 0; i < results.length; i++) {
+		const r = results[i];
+		const labels = labelString(unique[i]);
+		const [ts, val] = r.value;
+		lines.push(`  ${labels}  →  ${formatValue(val)}  @${formatTimestamp(ts)}`);
+	}
+
+	return lines.join("\n");
+}
+
+/** Maximum number of raw data points per series before switching to summary mode */
+const MAX_RAW_POINTS = 30;
+
+/** Format a range query result compactly */
+function formatRangeCompact(data: any): string {
+	const results = data.result ?? [];
+	if (results.length === 0) return "No results.";
+
+	const { common, unique } = partitionLabels(results);
+	const lines: string[] = [];
+
+	if (Object.keys(common).length > 0) {
+		lines.push(`Common labels: ${labelString(common)}`);
+		lines.push("");
+	}
+
+	lines.push(`${results.length} series:`);
+
+	for (let i = 0; i < results.length; i++) {
+		const r = results[i];
+		const values: [number, string][] = r.values ?? [];
+		const labels = labelString(unique[i]);
+
+		lines.push("");
+		lines.push(`── ${labels} (${values.length} points) ──`);
+
+		if (values.length === 0) {
+			lines.push("  (no data)");
+			continue;
+		}
+
+		const stats = computeStats(values);
+		lines.push(`  range: ${formatTimestamp(stats.firstTs)} → ${formatTimestamp(stats.lastTs)}`);
+		lines.push(`  min=${formatValue(String(stats.min))}  max=${formatValue(String(stats.max))}  avg=${formatValue(String(stats.avg))}  first=${formatValue(String(stats.first))}  last=${formatValue(String(stats.last))}`);
+
+		if (values.length <= MAX_RAW_POINTS) {
+			// Show all points inline
+			for (const [ts, val] of values) {
+				lines.push(`  ${formatTimestamp(ts)}  ${formatValue(val)}`);
+			}
+		} else {
+			// Show first 10, gap indicator, last 10
+			const head = values.slice(0, 10);
+			const tail = values.slice(-10);
+			for (const [ts, val] of head) {
+				lines.push(`  ${formatTimestamp(ts)}  ${formatValue(val)}`);
+			}
+			lines.push(`  ... (${values.length - 20} more points) ...`);
+			for (const [ts, val] of tail) {
+				lines.push(`  ${formatTimestamp(ts)}  ${formatValue(val)}`);
+			}
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function formatCompact(parsed: any): string {
+	if (parsed.status !== "success") {
+		return JSON.stringify(parsed, null, 2);
+	}
+
+	const data = parsed.data;
+	let output: string;
+
+	if (data.resultType === "vector") {
+		output = formatInstantCompact(data);
+	} else if (data.resultType === "matrix") {
+		output = formatRangeCompact(data);
+	} else {
+		// scalar, string, or unknown — fall back to JSON
+		output = JSON.stringify(data, null, 2);
+	}
+
+	// Append stats if available
+	if (parsed.stats) {
+		const s = parsed.stats;
+		const parts: string[] = [];
+		if (s.seriesFetched) parts.push(`series_fetched=${s.seriesFetched}`);
+		if (s.executionTimeMsec) parts.push(`exec_ms=${s.executionTimeMsec}`);
+		if (parts.length > 0) output += `\n\n[${parts.join(", ")}]`;
+	}
+
+	return output;
+}
+
+// ── Truncation ─────────────────────────────────────────────────────────
+
+function truncateResult(text: string, max_lines = 400): { text: string; truncated: boolean } {
 	const lines = text.split("\n");
 	if (lines.length <= max_lines) return { text, truncated: false };
 	return {
@@ -52,6 +227,8 @@ function truncateResult(text: string, max_lines = 200): { text: string; truncate
 	};
 }
 
+// ── Extension entry point ──────────────────────────────────────────────
+
 export default function (pi: ExtensionAPI) {
 	// ── vm_query ────────────────────────────────────────────────────────
 	pi.registerTool({
@@ -59,13 +236,16 @@ export default function (pi: ExtensionAPI) {
 		label: "VM Query",
 		description:
 			"Run a PromQL query against VictoriaMetrics. Supports instant and range queries. " +
-			"This is a read-only tool that queries metrics via HTTP GET to localhost.",
-		promptSnippet: "Run PromQL queries against VictoriaMetrics (instant or range)",
+			"This is a read-only tool that queries metrics via HTTP GET to localhost. " +
+			"Results are returned in compact format: common labels factored out, range queries show summary stats " +
+			"(min/max/avg/first/last) plus head/tail samples when series have many points.",
+		promptSnippet: "Run PromQL queries against VictoriaMetrics (instant or range). Results are compact: common labels stripped, range queries summarised.",
 		promptGuidelines: [
 			"Use vm_query for all VictoriaMetrics/Prometheus metric queries — never use bash/curl directly.",
 			"Always wrap _total metrics in rate() or increase().",
 			"Use topk() to limit large result sets.",
 			"Use range mode with start/end/step for time-series investigation.",
+			"Results show summary stats (min/max/avg) for range queries. Use raw=true if you need every data point.",
 		],
 		parameters: Type.Object({
 			query: Type.String({ description: "PromQL expression" }),
@@ -87,6 +267,11 @@ export default function (pi: ExtensionAPI) {
 			step: Type.Optional(
 				Type.String({
 					description: "Step for range queries (default: 60s)",
+				})
+			),
+			raw: Type.Optional(
+				Type.Boolean({
+					description: "Return raw JSON instead of compact format (default: false)",
 				})
 			),
 		}),
@@ -116,8 +301,15 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const raw = vmGet(path);
-				const formatted = formatJson(raw);
-				const { text, truncated } = truncateResult(formatted);
+				let output: string;
+				if (params.raw) {
+					const formatted = JSON.stringify(JSON.parse(raw), null, 2);
+					output = formatted;
+				} else {
+					const parsed = JSON.parse(raw);
+					output = formatCompact(parsed);
+				}
+				const { text, truncated } = truncateResult(output);
 				return {
 					content: [{ type: "text" as const, text }],
 					details: { query: params.query, truncated },
@@ -140,6 +332,7 @@ export default function (pi: ExtensionAPI) {
 			if (args.range && args.start) {
 				text += theme.fg("muted", ` [${args.start}..${args.end ?? "now"}, step=${args.step ?? "60s"}]`);
 			}
+			if (args.raw) text += theme.fg("muted", " [raw]");
 			return new Text(text, 0, 0);
 		},
 	});
@@ -215,7 +408,8 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 
-				const formatted = formatJson(raw);
+				// Labels/values/series responses are already compact, just format
+				const formatted = JSON.stringify(JSON.parse(raw), null, 2);
 				const { text } = truncateResult(formatted);
 				return {
 					content: [{ type: "text" as const, text }],
