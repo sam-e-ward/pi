@@ -2,7 +2,11 @@
   "rules": [
     {
       "pattern": "\\bsocat\\b",
-      "reason": "Do not start socat. If a tool requires a tunnel, check the skill instructions for the correct approach — the tunnel is likely already running."
+      "reason": "Do not start, restart, or debug socat. If a tool reports connectivity issues, ask the user to set up the tunnel and stop."
+    },
+    {
+      "pattern": "\\bssh\\b.*-[LRD]",
+      "reason": "Do not start or debug SSH tunnels. If a tool reports connectivity issues, ask the user to set up the tunnel and stop."
     }
   ]
 }

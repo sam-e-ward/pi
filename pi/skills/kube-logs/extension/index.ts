@@ -451,6 +451,16 @@ function actionCount(
 // ── Extension entry point ──────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	// Guard: don't let the LLM bypass kube_logs with raw curl/bash queries
+	pi.events.emit("command-guard:register", {
+		pattern: "\\bcurl\\b.*\\blocalhost[:/].*9201\\b",
+		reason: "Use the kube_logs tool for OpenSearch queries, not curl/bash.",
+	});
+	pi.events.emit("command-guard:register", {
+		pattern: "\\bcurl\\b.*\\bopensearch\\b",
+		reason: "Use the kube_logs tool for OpenSearch queries, not curl/bash.",
+	});
+
 	pi.registerTool({
 		name: "kube_logs",
 		label: "Kube Logs",

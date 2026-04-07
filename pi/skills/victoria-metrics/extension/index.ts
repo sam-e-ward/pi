@@ -230,6 +230,16 @@ function truncateResult(text: string, max_lines = 400): { text: string; truncate
 // ── Extension entry point ──────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	// Guard: don't let the LLM bypass vm_query/vm_labels with raw curl/bash queries
+	pi.events.emit("command-guard:register", {
+		pattern: "\\bcurl\\b.*\\blocalhost[:/].*8481\\b",
+		reason: "Use the vm_query or vm_labels tool for VictoriaMetrics queries, not curl/bash.",
+	});
+	pi.events.emit("command-guard:register", {
+		pattern: "\\bcurl\\b.*\\bvictoriametrics\\b",
+		reason: "Use the vm_query or vm_labels tool for VictoriaMetrics queries, not curl/bash.",
+	});
+
 	// ── vm_query ────────────────────────────────────────────────────────
 	pi.registerTool({
 		name: "vm_query",
