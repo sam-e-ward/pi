@@ -5,25 +5,35 @@ description: "Search and analyze Kubernetes application logs via OpenSearch. Fin
 
 # Kube Logs Skill
 
-Search and analyze Kubernetes application logs via OpenSearch. This skill provides a `kube_logs` tool that can **only perform read-only HTTP queries** against a local port. It cannot run kubectl, docker, or any other command.
+Search and analyze Kubernetes application logs via OpenSearch. This skill provides a `kube_logs` tool that can **only perform read-only HTTP queries** against OpenSearch. It cannot run kubectl, docker, or any other command.
 
 ## Safety
 
-The `kube_logs` tool makes HTTP GETs/POSTs to `localhost:9201` (OpenSearch search API only). It cannot execute commands, connect to clusters, or modify anything. **Do not use the `bash` tool for log queries.**
+The `kube_logs` tool makes HTTP GETs/POSTs to an OpenSearch instance over HTTPS (via Tailscale). It cannot execute commands, connect to clusters, or modify anything. **Do not use the `bash` tool for log queries.**
 
-If the tool reports that OpenSearch is unreachable, tell the user to start a port-forward and stop. **Do not attempt to fix connectivity yourself — never use bash to debug, start, or restart socat, ssh tunnels, or any port-forwarding process.** Just ask the user to set it up and wait.
+## Host Configuration
 
-## Setup
+The tool reads the OpenSearch hostname from the knowledge file at `~/.pi/kube-logs-knowledge/<environment>.md`. It looks for a metadata line:
 
-The user must forward OpenSearch to localhost first. **This is the user's responsibility — never start, restart, or debug port-forwards yourself.** If connectivity fails, show the user these commands and stop:
-
-```bash
-# Via SSH tunnel (if OpenSearch is accessible via Tailscale on a remote host):
-ssh -L 9201:cf-prod-opensearch:443 <jumphost> -N &
-
-# Or, if running on a host with direct Tailscale access:
-socat TCP-LISTEN:9201,fork,reuseaddr OPENSSL:cf-prod-opensearch:443,verify=0 &
 ```
+opensearch_host: cf-prod-opensearch
+```
+
+This hostname is resolved via Tailscale MagicDNS and connected to over HTTPS (port 443).
+
+### First-time setup
+
+If no host is configured, the tool will report that no host is found. Ask the user for the Tailscale hostname, then save it:
+
+```
+kube_logs(action: "set_host", host: "cf-prod-opensearch")
+```
+
+This tests connectivity and saves the hostname to the knowledge file for future use.
+
+### If connectivity fails
+
+The host machine must have Tailscale access to the OpenSearch instance. If the tool reports the host is unreachable, tell the user to check their Tailscale connection. **Do not attempt to fix connectivity yourself — never use bash to debug networking.** Just report the error and stop.
 
 ## Tool
 
@@ -36,10 +46,12 @@ socat TCP-LISTEN:9201,fork,reuseaddr OPENSSL:cf-prod-opensearch:443,verify=0 &
 - `slow_requests` — Find the slowest HTTP requests (uwsgi `generated X bytes in Y msecs`)
 - `errors` — Find error-level log lines
 - `count` — Count log lines matching filters, grouped by service or time interval
+- `set_host` — Configure the OpenSearch Tailscale hostname (saved to knowledge file)
 
 ### Examples
 
 ```
+kube_logs(action: "set_host", host: "cf-prod-opensearch")
 kube_logs(action: "services")
 kube_logs(action: "search", service: "cf-prod-be", start: "2026-04-07T14:10:00", end: "2026-04-07T14:20:00")
 kube_logs(action: "search", service: "cf-prod-be", start: "-5m", grep: "SIGPIPE")
@@ -65,7 +77,7 @@ kube_logs(action: "count", start: "-1h", group_by: "service")
 kube_logs(action: "services")
 ```
 
-If this fails, relay the setup instructions to the user and stop.
+If this fails because no host is configured, ask the user for the Tailscale hostname and use `set_host` to save it. If it fails because the host is unreachable, tell the user to check their Tailscale connection and stop.
 
 ### Step 2 — Load or create environment knowledge
 
@@ -126,6 +138,7 @@ A single user action often touches multiple services. Use timestamps and request
 
 ```markdown
 # Environment: <environment-name>
+opensearch_host: <tailscale-hostname>
 
 ## Environment Info
 - Environment: <environment-name>

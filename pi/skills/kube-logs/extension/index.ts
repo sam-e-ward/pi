@@ -3,14 +3,73 @@ import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 import { execSync } from "node:child_process";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join, basename } from "node:path";
+import { homedir } from "node:os";
 
-const OS_PORT = process.env.OPENSEARCH_PORT ?? "9201";
-const OS_BASE = `http://localhost:${OS_PORT}`;
+const KNOWLEDGE_DIR = join(homedir(), ".pi", "kube-logs-knowledge");
+
+// ── Host resolution ────────────────────────────────────────────────────
+
+/**
+ * Scan all knowledge files for one that has an `opensearch_host:` metadata line.
+ * Returns { host, env } or null.
+ */
+function loadHostFromKnowledge(): { host: string; env: string } | null {
+	if (!existsSync(KNOWLEDGE_DIR)) return null;
+	try {
+		const files = readdirSync(KNOWLEDGE_DIR).filter(f => f.endsWith(".md"));
+		for (const name of files) {
+			const file = join(KNOWLEDGE_DIR, name);
+			const content = readFileSync(file, "utf-8");
+			const m = content.match(/^opensearch_host:\s*(.+)$/m);
+			if (m) {
+				const host = m[1].trim();
+				const env = basename(name, ".md");
+				return { host, env };
+			}
+		}
+	} catch {}
+	return null;
+}
+
+function saveHostToKnowledge(env: string, host: string): void {
+	mkdirSync(KNOWLEDGE_DIR, { recursive: true });
+	const file = join(KNOWLEDGE_DIR, `${env}.md`);
+	if (existsSync(file)) {
+		let content = readFileSync(file, "utf-8");
+		if (content.match(/^opensearch_host:/m)) {
+			content = content.replace(/^opensearch_host:.*$/m, `opensearch_host: ${host}`);
+		} else {
+			// Insert after the first line (title)
+			const lines = content.split("\n");
+			lines.splice(1, 0, `opensearch_host: ${host}`);
+			content = lines.join("\n");
+		}
+		writeFileSync(file, content);
+	} else {
+		writeFileSync(file, `# Environment: ${env}\nopensearch_host: ${host}\n`);
+	}
+}
+
+let resolvedHost: string | null = null;
+
+function getOpenSearchBase(): string | null {
+	if (resolvedHost) return resolvedHost;
+	const info = loadHostFromKnowledge();
+	if (info) {
+		resolvedHost = `https://${info.host}`;
+		return resolvedHost;
+	}
+	return null;
+}
 
 // ── HTTP helpers ───────────────────────────────────────────────────────
 
 function osGet(path: string, timeout_ms = 15_000): string {
-	const url = `${OS_BASE}${path}`;
+	const base = getOpenSearchBase();
+	if (!base) throw new Error("NO_HOST");
+	const url = `${base}${path}`;
 	return execSync(`curl -sk --max-time ${Math.ceil(timeout_ms / 1000)} '${url}'`, {
 		encoding: "utf-8",
 		timeout: timeout_ms + 2_000,
@@ -18,7 +77,9 @@ function osGet(path: string, timeout_ms = 15_000): string {
 }
 
 function osPost(path: string, body: object, timeout_ms = 30_000): string {
-	const url = `${OS_BASE}${path}`;
+	const base = getOpenSearchBase();
+	if (!base) throw new Error("NO_HOST");
+	const url = `${base}${path}`;
 	const json = JSON.stringify(body);
 	return execSync(`curl -sk --max-time ${Math.ceil(timeout_ms / 1000)} -H 'Content-Type: application/json' -d '${json.replace(/'/g, "\\'")}' '${url}'`, {
 		encoding: "utf-8",
@@ -27,18 +88,24 @@ function osPost(path: string, body: object, timeout_ms = 30_000): string {
 }
 
 function checkConnectivity(): string | null {
+	const base = getOpenSearchBase();
+	if (!base) {
+		return [
+			"No OpenSearch host configured.",
+			"",
+			"I need the Tailscale hostname for OpenSearch (e.g. `cf-prod-opensearch`).",
+			"Please provide it and I'll save it to the knowledge file for future use.",
+		].join("\n");
+	}
 	try {
 		osGet("/_cat/health?format=json", 5_000);
 		return null;
 	} catch {
 		return [
-			`Cannot reach OpenSearch at localhost:${OS_PORT}.`,
+			`Cannot reach OpenSearch at ${base}.`,
 			"",
-			"Forward OpenSearch to localhost first. From a host with Tailscale access:",
-			`  socat TCP-LISTEN:${OS_PORT},fork,reuseaddr OPENSSL:cf-prod-opensearch:443,verify=0 &`,
-			"",
-			"Or via SSH tunnel:",
-			`  ssh -L ${OS_PORT}:cf-prod-opensearch:443 <jumphost> -N &`,
+			"The configured host may be unreachable. Check that this machine has Tailscale access,",
+			"or provide a different hostname.",
 		].join("\n");
 	}
 }
@@ -49,10 +116,17 @@ let cachedEnv: string | null = null;
 
 function detectEnvironment(): string {
 	if (cachedEnv) return cachedEnv;
+
+	// Try from knowledge first
+	const info = loadHostFromKnowledge();
+	if (info) {
+		cachedEnv = info.env;
+		return cachedEnv;
+	}
+
 	try {
 		const raw = osGet("/_cat/indices?format=json&h=index", 5_000);
 		const indices = JSON.parse(raw) as { index: string }[];
-		// Find fluentd indices like "cf-prod-fluentd-2026.04.07"
 		for (const { index } of indices) {
 			const m = index.match(/^(.+)-fluentd-\d{4}\.\d{2}\.\d{2}$/);
 			if (m) {
@@ -68,7 +142,6 @@ function detectEnvironment(): string {
 // ── Time helpers ───────────────────────────────────────────────────────
 
 function resolveTime(value: string): string {
-	// Relative time like "-5m", "-1h", "-30s"
 	const rel = value.match(/^-(\d+)(s|m|h|d)$/);
 	if (rel) {
 		const amount = parseInt(rel[1]);
@@ -76,15 +149,12 @@ function resolveTime(value: string): string {
 		const ms = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit]!;
 		return new Date(Date.now() - amount * ms).toISOString();
 	}
-	// Already ISO-ish
 	if (value.includes("T")) {
-		// Ensure timezone
 		if (!value.endsWith("Z") && !value.includes("+")) {
 			return value + "Z";
 		}
 		return value;
 	}
-	// Bare date
 	return value + "T00:00:00Z";
 }
 
@@ -147,7 +217,6 @@ function formatHit(hit: { _source: Record<string, unknown> }): string {
 	const pod = k8s?.pod_name ?? "";
 	const msg = src.message as string ?? "";
 
-	// Use container name unless there are multiple pods, then include pod
 	const prefix = pod ? `${container}/${pod.split("-").pop()}` : container;
 	return `${ts}  ${prefix}  ${msg}`;
 }
@@ -164,7 +233,6 @@ function truncateLines(lines: string[], max: number): { text: string; truncated:
 
 function actionServices(): string {
 	const env = detectEnvironment();
-	// Get today's index
 	const now = new Date();
 	const y = now.getUTCFullYear();
 	const m = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -207,7 +275,6 @@ function actionSearch(
 	const endIso = resolveTime(end);
 	const indices = indicesForRange(env, startIso, endIso);
 
-	// Paginate up to limit
 	const pageSize = Math.min(limit, 500);
 	const allLines: string[] = [];
 	let searchAfter: unknown[] | undefined;
@@ -248,8 +315,6 @@ function actionSlowRequests(
 	const endIso = resolveTime(end);
 	const indices = indicesForRange(env, startIso, endIso);
 
-	// Search for uwsgi completion lines with duration
-	// Pattern: "generated N bytes in N msecs"
 	const musts: object[] = [
 		{ match_phrase: { message: "generated" } },
 		{ match_phrase: { message: "msecs" } },
@@ -259,7 +324,6 @@ function actionSlowRequests(
 		musts.push({ term: { "kubernetes.container_name.keyword": service } });
 	}
 
-	// Fetch a generous number and filter/sort client-side for duration
 	const raw = osPost(`/${indices}/_search`, {
 		query: { bool: { must: musts } },
 		size: 2000,
@@ -270,7 +334,6 @@ function actionSlowRequests(
 	const data = JSON.parse(raw);
 	const hits = data.hits?.hits ?? [];
 
-	// Parse duration from message
 	type ParsedRequest = {
 		line: string;
 		duration_ms: number;
@@ -308,7 +371,6 @@ function actionSlowRequests(
 		});
 	}
 
-	// Sort by duration descending
 	requests.sort((a, b) => b.duration_ms - a.duration_ms);
 	const top = requests.slice(0, limit);
 
@@ -339,7 +401,6 @@ function actionErrors(
 	const endIso = resolveTime(end);
 	const indices = indicesForRange(env, startIso, endIso);
 
-	// Search for common error patterns
 	const musts: object[] = [
 		{ range: { timestamp: { gte: startIso, lte: endIso } } },
 	];
@@ -347,7 +408,6 @@ function actionErrors(
 		musts.push({ term: { "kubernetes.container_name.keyword": service } });
 	}
 
-	// Match ERROR level, exceptions, SIGPIPE, tracebacks, HTTP 5xx
 	const shoulds: object[] = [
 		{ match_phrase: { message: "ERROR" } },
 		{ match_phrase: { message: "Exception" } },
@@ -448,14 +508,38 @@ function actionCount(
 	return lines.join("\n");
 }
 
+// ── Host configuration action ──────────────────────────────────────────
+
+function actionSetHost(host: string): string {
+	// Strip protocol if provided
+	host = host.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
+	// Determine env from knowledge or default
+	const existing = loadHostFromKnowledge();
+	const env = existing?.env ?? "cf-prod";
+
+	// Test connectivity before saving
+	resolvedHost = `https://${host}`;
+	try {
+		osGet("/_cat/health?format=json", 5_000);
+	} catch {
+		resolvedHost = null;
+		return [
+			`Cannot reach OpenSearch at https://${host}.`,
+			"",
+			"Check that the hostname is correct and this machine has Tailscale access.",
+		].join("\n");
+	}
+
+	saveHostToKnowledge(env, host);
+	cachedEnv = null; // Reset so it re-detects
+
+	return `OpenSearch host set to ${host} and saved to knowledge file (~/.pi/kube-logs-knowledge/${env}.md).`;
+}
+
 // ── Extension entry point ──────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-	// Guard: don't let the LLM bypass kube_logs with raw curl/bash queries
-	pi.events.emit("command-guard:register", {
-		pattern: "\\bcurl\\b.*\\blocalhost[:/].*9201\\b",
-		reason: "Use the kube_logs tool for OpenSearch queries, not curl/bash.",
-	});
 	pi.events.emit("command-guard:register", {
 		pattern: "\\bcurl\\b.*\\bopensearch\\b",
 		reason: "Use the kube_logs tool for OpenSearch queries, not curl/bash.",
@@ -468,22 +552,27 @@ export default function (pi: ExtensionAPI) {
 			"Search and analyze Kubernetes application logs via OpenSearch. " +
 			"Supports searching by service/time/text, finding slow HTTP requests, " +
 			"listing errors, and counting logs by service or time. " +
-			"Read-only — queries OpenSearch on localhost.",
+			"Connects directly to OpenSearch over Tailscale (HTTPS). " +
+			"Read-only — queries only.",
 		promptSnippet:
 			"Search Kubernetes logs via OpenSearch. Find slow requests, errors, search by service/time/text, count by service or time.",
 		promptGuidelines: [
 			"Use kube_logs for all log queries — do not use bash/curl directly.",
 			"Start with kube_logs(action: 'services') to check connectivity and see available services.",
+			"If the tool reports no host configured, ask the user for the Tailscale hostname and use kube_logs(action: 'set_host', host: '<hostname>') to save it.",
 			"Use 'slow_requests' to find long-running HTTP requests across any service.",
 			"Use 'search' with 'grep' for targeted text searches within a time window.",
 			"Use relative times like '-5m', '-1h' for recent queries.",
 			"For Countfire backend analysis, pattern IDs in logs correspond to selection_id values in the database.",
 		],
 		parameters: Type.Object({
-			action: StringEnum(["services", "search", "slow_requests", "errors", "count"] as const, {
+			action: StringEnum(["services", "search", "slow_requests", "errors", "count", "set_host"] as const, {
 				description:
-					"services: list container names, search: query logs, slow_requests: find slow HTTP requests, errors: find errors, count: count logs by group",
+					"services: list container names, search: query logs, slow_requests: find slow HTTP requests, errors: find errors, count: count logs by group, set_host: configure the OpenSearch Tailscale hostname",
 			}),
+			host: Type.Optional(
+				Type.String({ description: "OpenSearch Tailscale hostname (for 'set_host' action, e.g. 'cf-prod-opensearch')" }),
+			),
 			service: Type.Optional(
 				Type.String({ description: "Container name filter (e.g. 'cf-prod-be', 'cf-prod-api')" }),
 			),
@@ -516,6 +605,24 @@ export default function (pi: ExtensionAPI) {
 		}),
 
 		async execute(_tool_call_id, params) {
+			// Handle set_host action separately — no connectivity check needed
+			if (params.action === "set_host") {
+				if (!params.host) {
+					return {
+						content: [{ type: "text" as const, text: "The 'host' parameter is required for 'set_host' action." }],
+						isError: true,
+						details: {},
+					};
+				}
+				const result = actionSetHost(params.host);
+				const isError = result.includes("Cannot reach");
+				return {
+					content: [{ type: "text" as const, text: result }],
+					isError,
+					details: { action: "set_host", host: params.host },
+				};
+			}
+
 			const err = checkConnectivity();
 			if (err) {
 				return {
@@ -574,6 +681,7 @@ export default function (pi: ExtensionAPI) {
 		renderCall(args, theme) {
 			let text = theme.fg("toolTitle", theme.bold("kube_logs "));
 			text += theme.fg("muted", args.action);
+			if (args.host) text += " " + theme.fg("dim", args.host);
 			if (args.service) text += " " + theme.fg("dim", args.service);
 			if (args.start || args.end) {
 				text += theme.fg("muted", ` [${args.start ?? "-5m"}..${args.end ?? "now"}]`);
