@@ -7,7 +7,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from 
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
-const KNOWLEDGE_DIR = join(homedir(), ".pi", "kube-logs-knowledge");
+const KNOWLEDGE_DIR = join(homedir(), ".pi", "opensearch-knowledge");
 
 // ── Host resolution ────────────────────────────────────────────────────
 
@@ -534,7 +534,7 @@ function actionSetHost(host: string): string {
 	saveHostToKnowledge(env, host);
 	cachedEnv = null; // Reset so it re-detects
 
-	return `OpenSearch host set to ${host} and saved to knowledge file (~/.pi/kube-logs-knowledge/${env}.md).`;
+	return `OpenSearch host set to ${host} and saved to knowledge file (~/.pi/opensearch-knowledge/${env}.md).`;
 }
 
 // ── Extension entry point ──────────────────────────────────────────────
@@ -542,12 +542,12 @@ function actionSetHost(host: string): string {
 export default function (pi: ExtensionAPI) {
 	pi.events.emit("command-guard:register", {
 		pattern: "\\bcurl\\b.*\\bopensearch\\b",
-		reason: "Use the kube_logs tool for OpenSearch queries, not curl/bash.",
+		reason: "Use the opensearch tool for OpenSearch queries, not curl/bash.",
 	});
 
 	pi.registerTool({
-		name: "kube_logs",
-		label: "Kube Logs",
+		name: "opensearch",
+		label: "OpenSearch",
 		description:
 			"Search and analyze Kubernetes application logs via OpenSearch. " +
 			"Supports searching by service/time/text, finding slow HTTP requests, " +
@@ -557,9 +557,9 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet:
 			"Search Kubernetes logs via OpenSearch. Find slow requests, errors, search by service/time/text, count by service or time.",
 		promptGuidelines: [
-			"Use kube_logs for all log queries — do not use bash/curl directly.",
-			"Start with kube_logs(action: 'services') to check connectivity and see available services.",
-			"If the tool reports no host configured, ask the user for the Tailscale hostname and use kube_logs(action: 'set_host', host: '<hostname>') to save it.",
+			"Use opensearch for all log queries — do not use bash/curl directly.",
+			"Start with opensearch(action: 'services') to check connectivity and see available services.",
+			"If the tool reports no host configured, ask the user for the Tailscale hostname and use opensearch(action: 'set_host', host: '<hostname>') to save it.",
 			"Use 'slow_requests' to find long-running HTTP requests across any service.",
 			"Use 'search' with 'grep' for targeted text searches within a time window.",
 			"Use relative times like '-5m', '-1h' for recent queries.",
@@ -679,7 +679,7 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme) {
-			let text = theme.fg("toolTitle", theme.bold("kube_logs "));
+			let text = theme.fg("toolTitle", theme.bold("opensearch "));
 			text += theme.fg("muted", args.action);
 			if (args.host) text += " " + theme.fg("dim", args.host);
 			if (args.service) text += " " + theme.fg("dim", args.service);

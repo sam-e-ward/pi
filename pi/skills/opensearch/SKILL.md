@@ -1,19 +1,19 @@
 ---
-name: kube-logs
+name: opensearch
 description: "Search and analyze Kubernetes application logs via OpenSearch. Find slow requests, errors, trace request flows, and investigate incidents. Safe read-only access — queries only."
 ---
 
-# Kube Logs Skill
+# OpenSearch Skill
 
-Search and analyze Kubernetes application logs via OpenSearch. This skill provides a `kube_logs` tool that can **only perform read-only HTTP queries** against OpenSearch. It cannot run kubectl, docker, or any other command.
+Search and analyze Kubernetes application logs via OpenSearch. This skill provides a `opensearch` tool that can **only perform read-only HTTP queries** against OpenSearch. It cannot run kubectl, docker, or any other command.
 
 ## Safety
 
-The `kube_logs` tool makes HTTP GETs/POSTs to an OpenSearch instance over HTTPS (via Tailscale). It cannot execute commands, connect to clusters, or modify anything. **Do not use the `bash` tool for log queries.**
+The `opensearch` tool makes HTTP GETs/POSTs to an OpenSearch instance over HTTPS (via Tailscale). It cannot execute commands, connect to clusters, or modify anything. **Do not use the `bash` tool for log queries.**
 
 ## Host Configuration
 
-The tool reads the OpenSearch hostname from the knowledge file at `~/.pi/kube-logs-knowledge/<environment>.md`. It looks for a metadata line:
+The tool reads the OpenSearch hostname from the knowledge file at `~/.pi/opensearch-knowledge/<environment>.md`. It looks for a metadata line:
 
 ```
 opensearch_host: cf-prod-opensearch
@@ -26,7 +26,7 @@ This hostname is resolved via Tailscale MagicDNS and connected to over HTTPS (po
 If no host is configured, the tool will report that no host is found. Ask the user for the Tailscale hostname, then save it:
 
 ```
-kube_logs(action: "set_host", host: "cf-prod-opensearch")
+opensearch(action: "set_host", host: "cf-prod-opensearch")
 ```
 
 This tests connectivity and saves the hostname to the knowledge file for future use.
@@ -37,7 +37,7 @@ The host machine must have Tailscale access to the OpenSearch instance. If the t
 
 ## Tool
 
-### `kube_logs` — Search and analyze logs
+### `opensearch` — Search and analyze logs
 
 **Actions:**
 
@@ -51,21 +51,21 @@ The host machine must have Tailscale access to the OpenSearch instance. If the t
 ### Examples
 
 ```
-kube_logs(action: "set_host", host: "cf-prod-opensearch")
-kube_logs(action: "services")
-kube_logs(action: "search", service: "cf-prod-be", start: "2026-04-07T14:10:00", end: "2026-04-07T14:20:00")
-kube_logs(action: "search", service: "cf-prod-be", start: "-5m", grep: "SIGPIPE")
-kube_logs(action: "slow_requests", start: "-30m", min_duration_ms: 5000)
-kube_logs(action: "slow_requests", service: "cf-prod-api", start: "-1h", limit: 20)
-kube_logs(action: "errors", service: "cf-prod-be", start: "-15m")
-kube_logs(action: "count", start: "-1h", group_by: "service")
+opensearch(action: "set_host", host: "cf-prod-opensearch")
+opensearch(action: "services")
+opensearch(action: "search", service: "cf-prod-be", start: "2026-04-07T14:10:00", end: "2026-04-07T14:20:00")
+opensearch(action: "search", service: "cf-prod-be", start: "-5m", grep: "SIGPIPE")
+opensearch(action: "slow_requests", start: "-30m", min_duration_ms: 5000)
+opensearch(action: "slow_requests", service: "cf-prod-api", start: "-1h", limit: 20)
+opensearch(action: "errors", service: "cf-prod-be", start: "-15m")
+opensearch(action: "count", start: "-1h", group_by: "service")
 ```
 
 ## Scope — Logs Only
 
 **This skill is strictly for log analysis.** When investigating an issue:
 
-- **Only use the `kube_logs` tool.** Never use `ipython`, `bash`, or database queries to look up IDs, drawing names, or other context found in logs.
+- **Only use the `opensearch` tool.** Never use `ipython`, `bash`, or database queries to look up IDs, drawing names, or other context found in logs.
 - If you find drawing IDs, pattern IDs, session IDs, or other identifiers in the logs, **report them as-is**. The user knows these IDs are visible in the logs — that's why they're asking.
 - Do not attempt to "enrich" log data by querying a database or running code. The answer must come entirely from the logs.
 
@@ -74,23 +74,23 @@ kube_logs(action: "count", start: "-1h", group_by: "service")
 ### Step 1 — Check connectivity
 
 ```
-kube_logs(action: "services")
+opensearch(action: "services")
 ```
 
 If this fails because no host is configured, ask the user for the Tailscale hostname and use `set_host` to save it. If it fails because the host is unreachable, tell the user to check their Tailscale connection and stop.
 
 ### Step 2 — Load or create environment knowledge
 
-Knowledge files are stored at `~/.pi/kube-logs-knowledge/<environment>.md`.
+Knowledge files are stored at `~/.pi/opensearch-knowledge/<environment>.md`.
 
 1. **Identify the environment**: the `services` action auto-detects the environment from OpenSearch index names (e.g. `cf-prod` from `cf-prod-fluentd-2026.04.07`).
 
-2. **Load knowledge**: read `~/.pi/kube-logs-knowledge/<environment>.md` if it exists. This contains previously discovered information about the environment — service names, log formats, request flows, known slow paths, and what is normal. Pay close attention to these — they prevent you from misinterpreting expected behaviour as problems.
+2. **Load knowledge**: read `~/.pi/opensearch-knowledge/<environment>.md` if it exists. This contains previously discovered information about the environment — service names, log formats, request flows, known slow paths, and what is normal. Pay close attention to these — they prevent you from misinterpreting expected behaviour as problems.
 
 3. **First time? Run discovery** (only if no knowledge file exists):
    ```
-   kube_logs(action: "services")
-   kube_logs(action: "count", start: "-1h", group_by: "service")
+   opensearch(action: "services")
+   opensearch(action: "count", start: "-1h", group_by: "service")
    ```
    Then create the knowledge file with what was found. Use the template below.
 
