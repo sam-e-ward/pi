@@ -119,6 +119,63 @@ Choose the right action based on the question:
 
 Once you've identified an interesting request or time window, use `search` with a narrow time range to see the full context — surrounding log lines, the sequence of operations, and timing.
 
+### ⚠️ MANDATORY: Use `pipe` for bulk log analysis
+
+**When analyzing more than a handful of logs, you MUST use the `pipe` parameter** to extract only the fields you need. Raw log lines are verbose — dumping hundreds of them into context wastes tokens and makes analysis harder.
+
+The workflow is **sample → pipe → analyze**:
+
+#### 1. Sample: Grab a few representative logs to see the format
+
+```
+opensearch(action: "search", service: "cf-prod-be", start: "...", end: "...", grep: "drawing_state", limit: 3)
+```
+
+Read the output to understand field positions and patterns.
+
+#### 2. Pipe: Build a grep + awk pipeline to extract what you need
+
+Based on the sample, craft a pipe that extracts only the relevant fields. The pipe operates on formatted log lines with this structure:
+
+```
+YYYY-MM-DD HH:MM:SS  service/pod  <original log message>
+```
+
+The timestamp is fields `$1 $2`, service/pod is `$3`, and the rest is the original message.
+
+Example — extract drawing IDs and durations from uwsgi access logs:
+
+```
+opensearch(action: "search", service: "cf-prod-be", start: "...", end: "...", grep: "drawing_state",
+  pipe: "grep 'msecs' | sed 's/.*drawing_state\\///' | awk '{split($1,a,\" \"); id=a[1]; for(i=1;i<=NF;i++) if($i==\"in\") {dur=$(i+1); break} print id, dur \"ms\"}'")
+```
+
+#### 3. Analyze: Run the pipe over the full dataset
+
+Use a high limit (the default is 2000 when pipe is set) to capture all relevant logs. The pipe compresses the output so only the extracted fields enter context.
+
+#### Tips for effective pipes
+
+- **Always test your pipe on the sample first** by including it in a `limit: 5` call
+- **grep first, awk second** — filter down to relevant lines before extracting fields
+- **Use `sort` and `uniq -c`** to aggregate (e.g. count requests per drawing ID)
+- **Use `sort -rn` and `head`** to find top-N by some numeric field
+- **Allowed commands**: grep, egrep, fgrep, awk, sed, sort, uniq, head, tail, wc, cut, tr, column
+
+#### Example
+
+```
+# Step 1: Sample a few logs to see the actual format
+opensearch(action: "search", service: "cf-prod-be", start: "-1h", grep: "some_endpoint", limit: 3)
+
+# Step 2: Read the sample output, identify which fields you need and their positions,
+# then craft a pipe to extract just those fields.
+# The pipe should be derived entirely from the sample — do not assume a format.
+
+opensearch(action: "search", service: "cf-prod-be", start: "-1h", grep: "some_endpoint",
+  pipe: "<grep/awk/sed pipeline derived from the sample log format>")
+```
+
 ### Step 4 — Update knowledge
 
 If you discovered anything new about the environment (a service's log format, request flow patterns, what's normal, known slow paths, incident learnings), **append it to the knowledge file** so future sessions benefit.

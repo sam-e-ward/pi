@@ -207,6 +207,60 @@ function buildSearchQuery(
 	return query;
 }
 
+// ── Pipe processing ────────────────────────────────────────────────────
+
+const ALLOWED_PIPE_COMMANDS = new Set([
+	"grep", "egrep", "fgrep", "awk", "sed", "sort", "uniq", "head", "tail",
+	"wc", "cut", "tr", "tee", "cat", "column",
+]);
+
+function validatePipe(pipe: string): string | null {
+	// Split on pipe characters, check each command
+	const segments = pipe.split(/\s*\|\s*/);
+	for (const seg of segments) {
+		const cmd = seg.trim().split(/\s+/)[0];
+		if (!cmd) continue;
+		if (!ALLOWED_PIPE_COMMANDS.has(cmd)) {
+			return `Command '${cmd}' is not allowed in pipe. Allowed: ${[...ALLOWED_PIPE_COMMANDS].join(", ")}`;
+		}
+	}
+	return null;
+}
+
+function applyPipe(lines: string[], pipe: string): string {
+	const err = validatePipe(pipe);
+	if (err) return `Pipe error: ${err}`;
+
+	const { writeFileSync, unlinkSync } = require("node:fs");
+	const { execSync } = require("node:child_process");
+	const tmpFile = `/tmp/os-pipe-${Date.now()}.txt`;
+
+	try {
+		writeFileSync(tmpFile, lines.join("\n") + "\n");
+		const result = execSync(`cat '${tmpFile}' | ${pipe}`, {
+			encoding: "utf-8",
+			timeout: 30_000,
+			maxBuffer: 10 * 1024 * 1024,
+		}).trim();
+
+		if (!result) {
+			return `Pipe produced no output (${lines.length} input lines).`;
+		}
+
+		const outputLines = result.split("\n");
+		return `${outputLines.length} line(s) (from ${lines.length} input lines, piped through: ${pipe}):\n\n${result}`;
+	} catch (e: unknown) {
+		const msg = e instanceof Error ? e.message : String(e);
+		// grep returns exit code 1 when no matches — not an error
+		if (msg.includes("status 1") && pipe.match(/^\s*grep|.*\|\s*grep/)) {
+			return `Pipe produced no matches (${lines.length} input lines).`;
+		}
+		return `Pipe execution error: ${msg}`;
+	} finally {
+		try { unlinkSync(tmpFile); } catch {}
+	}
+}
+
 // ── Formatters ─────────────────────────────────────────────────────────
 
 function formatHit(hit: { _source: Record<string, unknown> }): string {
@@ -269,6 +323,7 @@ function actionSearch(
 	end: string,
 	grep: string | undefined,
 	limit: number,
+	pipe: string | undefined,
 ): string {
 	const env = detectEnvironment();
 	const startIso = resolveTime(start);
@@ -297,6 +352,11 @@ function actionSearch(
 
 	if (allLines.length === 0) {
 		return "No matching logs found.";
+	}
+
+	// If a pipe is specified, run the log lines through it
+	if (pipe) {
+		return applyPipe(allLines, pipe);
 	}
 
 	const { text } = truncateLines(allLines, limit);
@@ -564,6 +624,7 @@ export default function (pi: ExtensionAPI) {
 			"Use 'search' with 'grep' for targeted text searches within a time window.",
 			"Use relative times like '-5m', '-1h' for recent queries.",
 			"For Countfire backend analysis, pattern IDs in logs correspond to selection_id values in the database.",
+			"For bulk log analysis, ALWAYS use the 'pipe' parameter to extract only needed fields. Sample 3-5 logs first to understand the format, then craft a grep+awk pipe. This avoids dumping hundreds of verbose log lines into context.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(["services", "search", "slow_requests", "errors", "count", "set_host"] as const, {
@@ -588,6 +649,14 @@ export default function (pi: ExtensionAPI) {
 			),
 			grep: Type.Optional(
 				Type.String({ description: "Text to match in log messages (for 'search' action)" }),
+			),
+			pipe: Type.Optional(
+				Type.String({
+					description:
+						"Shell pipe to transform log lines before returning (for 'search' action). " +
+						"Allowed commands: grep, awk, sed, sort, uniq, head, tail, wc, cut, tr, column. " +
+						"Example: \"grep drawing_state | awk '{print $1, $NF}'\"",
+				}),
 			),
 			min_duration_ms: Type.Optional(
 				Type.Number({
@@ -635,7 +704,8 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const start = params.start ?? "-5m";
 				const end = params.end ?? new Date().toISOString();
-				const limit = params.limit ?? 50;
+				const defaultLimit = params.pipe ? 2000 : 50;
+				const limit = params.limit ?? defaultLimit;
 				let result: string;
 
 				switch (params.action) {
@@ -643,7 +713,7 @@ export default function (pi: ExtensionAPI) {
 						result = actionServices();
 						break;
 					case "search":
-						result = actionSearch(params.service, start, end, params.grep, limit);
+						result = actionSearch(params.service, start, end, params.grep, limit, params.pipe);
 						break;
 					case "slow_requests":
 						result = actionSlowRequests(
@@ -687,6 +757,7 @@ export default function (pi: ExtensionAPI) {
 				text += theme.fg("muted", ` [${args.start ?? "-5m"}..${args.end ?? "now"}]`);
 			}
 			if (args.grep) text += theme.fg("muted", ` /${args.grep}/`);
+			if (args.pipe) text += theme.fg("muted", ` | ${args.pipe}`);
 			if (args.min_duration_ms) text += theme.fg("muted", ` >=${args.min_duration_ms}ms`);
 			return new Text(text, 0, 0);
 		},
