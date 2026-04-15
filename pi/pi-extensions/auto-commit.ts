@@ -4,6 +4,9 @@
  * After every agent response, checks if any files were written/edited,
  * finds which git repos they belong to, and auto-commits with an "AI:" prefix.
  *
+ * Uses a lightweight LLM call (via `pi -p`) to generate a proper commit message
+ * from the staged diff.
+ *
  * When the same repo is touched in consecutive agent responses, asks the user
  * whether to amend the previous commit (fix) or create a new one (build on it).
  *
@@ -12,6 +15,17 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { resolve, dirname } from "node:path";
+
+const COMMIT_MSG_PROMPT = `You are a commit message generator. Given a git diff, write a single-line commit message.
+
+Rules:
+- Output ONLY the commit message, nothing else
+- Max 60 characters
+- Use imperative mood ("Add feature" not "Added feature")
+- Be specific about what changed, not why
+- No quotes, no period at the end
+- No conventional commit prefixes (no feat:, fix:, etc.)
+- If multiple things changed, summarize the overall intent`;
 
 export default function (pi: ExtensionAPI) {
 	// Track last auto-commit per repo: repoRoot -> { sha, message }
@@ -66,8 +80,8 @@ export default function (pi: ExtensionAPI) {
 			});
 			if (!diff.trim()) continue;
 
-			// Build commit message from last assistant text
-			const commitMessage = buildCommitMessage(event.messages);
+			// Generate commit message from the diff using an LLM
+			const commitMessage = await generateCommitMessage(pi, repoRoot);
 
 			// Check if we have a previous auto-commit for this repo
 			const prev = lastAutoCommit.get(repoRoot);
@@ -167,109 +181,78 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
-function buildCommitMessage(messages: Array<{ role: string; content: unknown }>): string {
-	// Collect edited file paths for a fallback summary
-	const editedFiles: string[] = [];
-	for (const msg of messages) {
-		if ((msg as any).role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content as any[]) {
-				if ((block.type === "tool_use" || block.type === "toolCall") &&
-					(block.name === "write" || block.name === "edit")) {
-					const filePath = block.input?.path ?? block.arguments?.path;
-					if (typeof filePath === "string") {
-						editedFiles.push(filePath.split("/").pop()!);
-					}
-				}
+async function generateCommitMessage(pi: ExtensionAPI, repoRoot: string): Promise<string> {
+	// Get the staged diff (truncated to avoid overwhelming the model)
+	const { stdout: fullDiff } = await pi.exec("git", ["-C", repoRoot, "diff", "--cached"], {
+		timeout: 5000,
+	});
+
+	// Truncate diff to ~4KB to keep token usage minimal
+	const maxDiffLen = 4096;
+	let diff = fullDiff;
+	if (diff.length > maxDiffLen) {
+		diff = diff.slice(0, maxDiffLen) + "\n... (diff truncated)";
+	}
+
+	// Also get the stat summary for context
+	const { stdout: stat } = await pi.exec("git", ["-C", repoRoot, "diff", "--cached", "--stat"], {
+		timeout: 5000,
+	});
+
+	const prompt = `${stat.trim()}\n\n${diff}`;
+
+	try {
+		// Use pi in print mode with a fast model, no tools, no session, no extensions
+		const { stdout, code } = await pi.exec(
+			"pi",
+			[
+				"-p",
+				"--no-tools",
+				"--no-session",
+				"--no-extensions",
+				"--no-skills",
+				"--model", "gemini-2.0-flash",
+				"--system-prompt", COMMIT_MSG_PROMPT,
+				prompt,
+			],
+			{ timeout: 15000 },
+		);
+
+		if (code === 0 && stdout.trim()) {
+			let msg = stdout.trim();
+			// Strip any quotes the model might have added
+			msg = msg.replace(/^["']|["']$/g, "");
+			// Take first line only, just in case
+			msg = msg.split("\n")[0].trim();
+			// Enforce length limit
+			if (msg.length > 60) {
+				msg = msg.slice(0, 57) + "...";
+			}
+			if (msg) {
+				return `AI: ${msg}`;
 			}
 		}
+	} catch {
+		// Fall through to fallback
 	}
 
-	// Gather all assistant text blocks (last message first)
-	const textBlocks: string[] = [];
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content as any[]) {
-				if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-					textBlocks.push(block.text.trim());
-				}
-			}
-			if (textBlocks.length > 0) break; // only use last assistant message
-		}
-	}
-
-	const rawText = textBlocks.join("\n");
-	const summary = extractSummary(rawText, editedFiles);
-	return `AI: ${summary}`;
+	// Fallback: use file names from the stat
+	return buildFallbackMessage(stat);
 }
 
-/** Preamble patterns that don't make good commit messages */
-const PREAMBLE_RE = /^(here('s| are|:)|i('ve| have| will| made| updated| changed|'ll)|done[.!]?|sure[.!,]|ok[.!,]|let me|now |the changes|two |three |four |five |six |seven |eight |nine |ten |\d+ changes?|changes?:|updates?:|summary:?|all done)/i;
+function buildFallbackMessage(stat: string): string {
+	// Extract file names from stat output
+	const files = stat
+		.split("\n")
+		.map((line) => line.trim().split("|")[0]?.trim())
+		.filter((f) => f && !f.includes("changed") && !f.includes("insertion") && !f.includes("deletion"));
 
-/** Lines that are just list markers or very short */
-const LIST_MARKER_RE = /^(\d+\.|[-*•])\s*/;
+	if (files.length === 0) return "AI: Update files";
 
-function extractSummary(rawText: string, editedFiles: string[]): string {
-	if (!rawText) {
-		return fileFallback(editedFiles);
+	const fileNames = files.map((f) => f.split("/").pop()!);
+	let msg = `AI: Update ${fileNames.join(", ")}`;
+	if (msg.length > 72) {
+		msg = msg.slice(0, 69) + "...";
 	}
-
-	const lines = rawText.split("\n")
-		.map(l => l.replace(/[`*_~#>\[\]]/g, "").replace(/\s+/g, " ").trim())
-		.filter(l => l.length > 0);
-
-	// Strategy 1: If there's a single substantive line (after filtering preamble), use it
-	// Strategy 2: Collect list items and join them
-	// Strategy 3: Use first non-preamble line
-
-	const substantiveLines: string[] = [];
-	for (const line of lines) {
-		if (PREAMBLE_RE.test(line) && line.endsWith(":")) continue; // skip "Here's what I did:" etc.
-		if (line.length < 4) continue; // skip very short lines
-		// Strip list markers
-		const cleaned = line.replace(LIST_MARKER_RE, "").trim();
-		if (cleaned.length >= 4) {
-			substantiveLines.push(cleaned);
-		}
-	}
-
-	let summary: string;
-
-	if (substantiveLines.length === 0) {
-		return fileFallback(editedFiles);
-	} else if (substantiveLines.length === 1) {
-		summary = substantiveLines[0];
-	} else {
-		// Multiple substantive lines — join with semicolons for a compact summary
-		// But first check if the first line is already a good standalone summary
-		const first = substantiveLines[0];
-		if (!first.endsWith(":") && first.length >= 15 && !PREAMBLE_RE.test(first)) {
-			summary = first;
-		} else {
-			// Join items, lowercasing the start of each for flow
-			summary = substantiveLines
-				.slice(0, 4) // max 4 items
-				.map((s, i) => i === 0 ? s : lcFirst(s))
-				.join("; ");
-		}
-	}
-
-	return truncate(summary, 68);
-}
-
-function fileFallback(editedFiles: string[]): string {
-	if (editedFiles.length === 0) return "Update files";
-	const unique = [...new Set(editedFiles)];
-	return truncate(`Update ${unique.join(", ")}`, 68);
-}
-
-function truncate(s: string, maxLen: number): string {
-	if (s.length <= maxLen) return s;
-	return s.slice(0, maxLen - 3) + "...";
-}
-
-function lcFirst(s: string): string {
-	// Don't lowercase acronyms or paths
-	if (s.length < 2 || s[1] === s[1].toUpperCase()) return s;
-	return s[0].toLowerCase() + s.slice(1);
+	return msg;
 }
