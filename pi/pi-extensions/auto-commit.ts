@@ -177,7 +177,6 @@ function buildCommitMessage(messages: Array<{ role: string; content: unknown }>)
 					(block.name === "write" || block.name === "edit")) {
 					const filePath = block.input?.path ?? block.arguments?.path;
 					if (typeof filePath === "string") {
-						// Use just the filename, not full path
 						editedFiles.push(filePath.split("/").pop()!);
 					}
 				}
@@ -185,45 +184,92 @@ function buildCommitMessage(messages: Array<{ role: string; content: unknown }>)
 		}
 	}
 
-	// Find the last assistant text
-	let rawText = "";
+	// Gather all assistant text blocks (last message first)
+	const textBlocks: string[] = [];
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
 		if (msg.role === "assistant" && Array.isArray(msg.content)) {
-			for (const block of msg.content) {
-				if (
-					typeof block === "object" &&
-					block !== null &&
-					"type" in block &&
-					block.type === "text" &&
-					"text" in block &&
-					typeof block.text === "string" &&
-					block.text.trim()
-				) {
-					rawText = block.text.trim();
-					break;
+			for (const block of msg.content as any[]) {
+				if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+					textBlocks.push(block.text.trim());
 				}
 			}
-			if (rawText) break;
+			if (textBlocks.length > 0) break; // only use last assistant message
 		}
 	}
 
-	// Clean up: take first line, strip markdown formatting
-	let summary = rawText.split("\n")[0]
-		.replace(/[`*_~#>\[\]]/g, "")  // strip markdown chars
-		.replace(/\s+/g, " ")           // collapse whitespace
-		.trim();
-
-	if (!summary || summary.length > 72) {
-		if (summary) {
-			summary = summary.slice(0, 69) + "...";
-		} else if (editedFiles.length > 0) {
-			summary = `Update ${editedFiles.join(", ")}`;
-			if (summary.length > 72) summary = summary.slice(0, 69) + "...";
-		} else {
-			summary = "Update files";
-		}
-	}
-
+	const rawText = textBlocks.join("\n");
+	const summary = extractSummary(rawText, editedFiles);
 	return `AI: ${summary}`;
+}
+
+/** Preamble patterns that don't make good commit messages */
+const PREAMBLE_RE = /^(here('s| are|:)|i('ve| have| will| made| updated| changed|'ll)|done[.!]?|sure[.!,]|ok[.!,]|let me|now |the changes|two |three |four |five |six |seven |eight |nine |ten |\d+ changes?|changes?:|updates?:|summary:?|all done)/i;
+
+/** Lines that are just list markers or very short */
+const LIST_MARKER_RE = /^(\d+\.|[-*•])\s*/;
+
+function extractSummary(rawText: string, editedFiles: string[]): string {
+	if (!rawText) {
+		return fileFallback(editedFiles);
+	}
+
+	const lines = rawText.split("\n")
+		.map(l => l.replace(/[`*_~#>\[\]]/g, "").replace(/\s+/g, " ").trim())
+		.filter(l => l.length > 0);
+
+	// Strategy 1: If there's a single substantive line (after filtering preamble), use it
+	// Strategy 2: Collect list items and join them
+	// Strategy 3: Use first non-preamble line
+
+	const substantiveLines: string[] = [];
+	for (const line of lines) {
+		if (PREAMBLE_RE.test(line) && line.endsWith(":")) continue; // skip "Here's what I did:" etc.
+		if (line.length < 4) continue; // skip very short lines
+		// Strip list markers
+		const cleaned = line.replace(LIST_MARKER_RE, "").trim();
+		if (cleaned.length >= 4) {
+			substantiveLines.push(cleaned);
+		}
+	}
+
+	let summary: string;
+
+	if (substantiveLines.length === 0) {
+		return fileFallback(editedFiles);
+	} else if (substantiveLines.length === 1) {
+		summary = substantiveLines[0];
+	} else {
+		// Multiple substantive lines — join with semicolons for a compact summary
+		// But first check if the first line is already a good standalone summary
+		const first = substantiveLines[0];
+		if (!first.endsWith(":") && first.length >= 15 && !PREAMBLE_RE.test(first)) {
+			summary = first;
+		} else {
+			// Join items, lowercasing the start of each for flow
+			summary = substantiveLines
+				.slice(0, 4) // max 4 items
+				.map((s, i) => i === 0 ? s : lcFirst(s))
+				.join("; ");
+		}
+	}
+
+	return truncate(summary, 68);
+}
+
+function fileFallback(editedFiles: string[]): string {
+	if (editedFiles.length === 0) return "Update files";
+	const unique = [...new Set(editedFiles)];
+	return truncate(`Update ${unique.join(", ")}`, 68);
+}
+
+function truncate(s: string, maxLen: number): string {
+	if (s.length <= maxLen) return s;
+	return s.slice(0, maxLen - 3) + "...";
+}
+
+function lcFirst(s: string): string {
+	// Don't lowercase acronyms or paths
+	if (s.length < 2 || s[1] === s[1].toUpperCase()) return s;
+	return s[0].toLowerCase() + s.slice(1);
 }
