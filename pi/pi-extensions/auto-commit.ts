@@ -34,6 +34,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (event, ctx) => {
 		// Collect file paths from write/edit tool calls in this agent run
 		const editedFiles = new Set<string>();
+		let bashWasUsed = false;
 
 		for (const msg of event.messages) {
 			if (msg.role === "assistant" && Array.isArray(msg.content)) {
@@ -44,7 +45,29 @@ export default function (pi: ExtensionAPI) {
 							if (typeof filePath === "string") {
 								editedFiles.add(resolve(ctx.cwd, filePath));
 							}
+						} else if (block.name === "bash" || block.name === "subagent") {
+							bashWasUsed = true;
 						}
+					}
+				}
+			}
+		}
+
+		// When bash/subagent was used, scan for untracked and modified files
+		// that the agent may have created outside of write/edit tool calls
+		if (bashWasUsed) {
+			const { stdout: statusOut, code: statusCode } = await pi.exec(
+				"git", ["-C", ctx.cwd, "status", "--porcelain"],
+				{ timeout: 5000 },
+			);
+			if (statusCode === 0 && statusOut.trim()) {
+				for (const line of statusOut.split("\n")) {
+					if (!line.trim()) continue;
+					const status = line.slice(0, 2);
+					const filePath = line.slice(3).trim();
+					// Pick up untracked (??) and modified ( M / M) files
+					if (status === "??" || status.includes("M") || status === " A" || status === "A ") {
+						editedFiles.add(resolve(ctx.cwd, filePath));
 					}
 				}
 			}
